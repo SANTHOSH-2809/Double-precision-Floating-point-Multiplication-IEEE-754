@@ -32,5 +32,6 @@ Double precision floating point multiplication in IEEE-754 format.
 ### Timing
 <img width="1582" height="508" alt="image" src="https://github.com/user-attachments/assets/0c29c05a-2dc7-4662-b083-4699bd3207b4" />
 
-
+### I/O Ports
+<img width="1615" height="352" alt="Screenshot 2026-03-12 172229" src="https://github.com/user-attachments/assets/5bdec026-09a1-42cc-bdff-f38c7a953dbf" />
 
