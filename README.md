@@ -16,7 +16,8 @@ Double precision floating point multiplication in IEEE-754 format.
 
 
 
-
+### hw_vio_1
+<img width="1196" height="471" alt="Screenshot 2026-03-12 174029" src="https://github.com/user-attachments/assets/ea4ceca8-e055-4030-a509-45d85b792c79" />
 
 ### Schematic
 <img width="1551" height="441" alt="image" src="https://github.com/user-attachments/assets/a1a1518c-dc29-45fc-9787-b2a3a1bc2f55" />
