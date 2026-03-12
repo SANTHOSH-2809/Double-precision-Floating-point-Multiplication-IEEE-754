@@ -4,16 +4,70 @@ Double precision floating point multiplication in IEEE-754 format.
 ---
 ## Description
 
+This project implements a 64-bit IEEE-754 double-precision floating-point multiplier in Verilog. The design extracts the sign, exponent, and mantissa fields from two 64-bit floating-point operands, performs mantissa multiplication, normalizes the result, and reconstructs the final floating-point number according to the IEEE-754 standard.
+
+The architecture also handles special floating-point values such as NaN, Infinity, and Zero. The design is modular and synthesizable, making it suitable for FPGA prototyping and VLSI RTL design practice.
 
 ## Project Attributes
+
+| Attribute           | Description                                                            |
+| ------------------- | ---------------------------------------------------------------------- |
+| Language            | Verilog HDL                                                            |
+| Standard            | IEEE-754 Double Precision                                              |
+| Data Width          | 64 bits                                                                |
+| Sign Bit            | 1 bit                                                                  |
+| Exponent            | 11 bits                                                                |
+| Mantissa            | 52 bits                                                                |
+| Mantissa Multiplier | 53 × 53 bit multiplication                                             |
+| Design Style        | Combinational RTL                                                      |
+| Modules             | Floating-point core logic with normalization and special-case handling |
+| Verification        | Simulation testbench with normal, edge, and special cases              |
 
 
 ## Features
 
+ - IEEE-754 double precision (64-bit) format support
+
+ - Automatic sign calculation using XOR logic
+
+ - Exponent bias removal and rebiasing
+
+ - 53-bit mantissa multiplication
+
+ - Result normalization
+
+ - Detection and handling of:
+
+      - NaN
+
+      - Infinity
+
+      - Zero
+
+      - Overflow detection
+
+      - Underflow detection
+
+ - Modular design for easier debugging and extension
+
 
 ## Possible Operation
 
-
+| Operand A      | Operand B | Result             |
+| -------------- | --------- | ------------------ |
+| Normal         | Normal    | Normalized product |
+| Normal         | Zero      | Zero               |
+| Zero           | Normal    | Zero               |
+| Zero           | Zero      | Zero               |
+| Infinity       | Normal    | Infinity           |
+| Normal         | Infinity  | Infinity           |
+| Infinity       | Zero      | NaN                |
+| Zero           | Infinity  | NaN                |
+| Infinity       | Infinity  | Infinity           |
+| NaN            | Any       | NaN                |
+| Any            | NaN       | NaN                |
+| Overflow case  | Any       | Infinity           |
+| Underflow case | Any       | Zero               |
 
 
 ### hw_vio_1
