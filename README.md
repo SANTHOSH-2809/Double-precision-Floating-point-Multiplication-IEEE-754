@@ -80,12 +80,13 @@ The architecture also handles special floating-point values such as NaN, Infinit
 ### design_wrapper
 <img width="764" height="271" alt="image" src="https://github.com/user-attachments/assets/83088c32-82af-4f91-a5ee-3ef403029cda" />
 
+### I/O Ports
+<img width="1615" height="352" alt="Screenshot 2026-03-12 172229" src="https://github.com/user-attachments/assets/5bdec026-09a1-42cc-bdff-f38c7a953dbf" />
+
+## Summary
+
 ### Power Summary
 <img width="1604" height="495" alt="image" src="https://github.com/user-attachments/assets/b0057455-674c-4af9-9d6d-d72e6c88ccbe" />
 
 ### Timing
 <img width="1582" height="508" alt="image" src="https://github.com/user-attachments/assets/0c29c05a-2dc7-4662-b083-4699bd3207b4" />
-
-### I/O Ports
-<img width="1615" height="352" alt="Screenshot 2026-03-12 172229" src="https://github.com/user-attachments/assets/5bdec026-09a1-42cc-bdff-f38c7a953dbf" />
-
