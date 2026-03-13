@@ -1,0 +1,68 @@
+module tb;
+
+  reg  [63:0] A, B;
+  wire [63:0] final_product;
+
+
+  floatingpoint uut (
+      .A(A),
+      .B(B),
+      .final_product(final_product)
+  );
+
+  //--------------------------------------------------
+  // Task
+  //--------------------------------------------------
+  task apply_test;
+    input [63:0] a_in;
+    input [63:0] b_in;
+    input [127:0] name;
+  begin
+      A = a_in;
+      B = b_in;
+
+      #10;
+
+
+      $display("--------------------------------------------------");
+      $display("TEST       : %s", name);
+      $display("DUT OUTPUT : %h", final_product);
+  end
+  endtask
+
+  //--------------------------------------------------
+  // Tests
+  //--------------------------------------------------
+  initial begin
+
+    // NORMAL VALUE MULTIPLICATIONS
+    apply_test(64'h3FF0000000000000, 64'h0010000000000000, "1.0 * 2.0");
+    apply_test(64'h4008000000000000, 64'h4000000000000000, "3.0 * 2.0");
+    apply_test(64'h4016000000000000, 64'h4008000000000000, "5.5 * 3.0");
+    apply_test(64'h4016000000000000, 64'h401A000000000000, "5.5 * 6.5");
+    apply_test(64'h3FF8000000000000, 64'h3FF8000000000000, "1.5 * 1.5");
+    apply_test(64'h4004000000000000, 64'h4008000000000000, "2.5 * 3.0");
+    apply_test(64'h4010000000000000, 64'h4000000000000000, "4.0 * 2.0");
+    apply_test(64'h4014000000000000, 64'h4010000000000000, "5.0 * 4.0");
+    apply_test(64'h400C000000000000, 64'h4008000000000000, "3.5 * 3.0");
+    apply_test(64'h4012000000000000, 64'h4008000000000000, "4.5 * 3.0");
+
+    // RANDOM NORMAL VALUES
+    repeat(10) begin
+        A = {$random,$random};
+        B = {$random,$random};
+        #10;
+
+
+
+        $display("--------------------------------------------------");
+        $display("RANDOM TEST");
+        $display("DUT OUTPUT : %h", final_product);
+    end
+
+    #20;
+    $finish;
+
+  end
+
+endmodule
