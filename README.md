@@ -77,7 +77,7 @@ The architecture also handles special floating-point values such as NaN, Infinit
 | `< 2^-1022`                                     | **0 (flush-to-zero)**     |
 | `> 1.7976931348623157 × 10^308`                 | **Infinity (overflow)**   |
 
-## 
+## Equivalent Hex Range (IEEE-754 Double)
 
 | Result magnitude                                 | Output                    |
 | ------------------------------------------------ | ------------------------- |
