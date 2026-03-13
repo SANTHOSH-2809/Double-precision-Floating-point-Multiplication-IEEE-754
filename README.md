@@ -104,7 +104,7 @@ The architecture also handles special floating-point values such as NaN, Infinit
 <img width="1121" height="786" alt="image" src="https://github.com/user-attachments/assets/ec9c5f23-41a6-408e-8c77-741fc689c00f" />
 
 ---
-### design_wrapper
+### Block Design
 <img width="764" height="271" alt="image" src="https://github.com/user-attachments/assets/83088c32-82af-4f91-a5ee-3ef403029cda" />
 
 ---
