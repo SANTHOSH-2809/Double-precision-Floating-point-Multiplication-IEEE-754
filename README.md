@@ -8,6 +8,8 @@ This project implements a 64-bit IEEE-754 double-precision floating-point multip
 
 The architecture also handles special floating-point values such as NaN, Infinity, and Zero. The design is modular and synthesizable, making it suitable for FPGA prototyping and VLSI RTL design practice.
 
+---
+
 ## Project Attributes
 
 | Attribute           | Description                                                            |
@@ -23,7 +25,7 @@ The architecture also handles special floating-point values such as NaN, Infinit
 | Modules             | Floating-point core logic with normalization and special-case handling |
 | Verification        | Simulation testbench with normal, edge, and special cases              |
 
-
+---
 ## Features
 
  - IEEE-754 double precision (64-bit) format support
@@ -50,7 +52,7 @@ The architecture also handles special floating-point values such as NaN, Infinit
 
  - Modular design for easier debugging and extension
 
-
+---
 ## Possible Operation
 
 | Operand A      | Operand B | Result             |
@@ -69,6 +71,7 @@ The architecture also handles special floating-point values such as NaN, Infinit
 | Overflow case  | Any       | Infinity           |
 | Underflow case | Any       | Zero               |
 
+---
 ## Range in Magnitude
 
 | Result magnitude                                | Output                    |
@@ -85,24 +88,30 @@ The architecture also handles special floating-point values such as NaN, Infinit
 | result `< 0010000000000000`                      | **0000000000000000 (0)**  |
 | result `> 7FEFFFFFFFFFFFFF`                      | **7FF0000000000000 (+Infinity)** |
 
-
+---
 ### hw_vio_1
 
 <img width="838" height="450" alt="image" src="https://github.com/user-attachments/assets/60ea1693-dc09-43e4-9df6-cbee60961a0f" />
 
+---
+## Video
 [Demo video](https://drive.google.com/file/d/109JcUdwhV3lv-jsfLOvnb3OAdQbGQAIu/view?usp=sharing)
 
+---
 
 ### Schematic
 <img width="1172" height="468" alt="image" src="https://github.com/user-attachments/assets/3f241eb7-cf8d-4226-b7cf-75886e328b5d" />
 <img width="1121" height="786" alt="image" src="https://github.com/user-attachments/assets/ec9c5f23-41a6-408e-8c77-741fc689c00f" />
 
+---
 ### design_wrapper
 <img width="764" height="271" alt="image" src="https://github.com/user-attachments/assets/83088c32-82af-4f91-a5ee-3ef403029cda" />
 
+---
 ### I/O Ports
 <img width="1615" height="352" alt="Screenshot 2026-03-12 172229" src="https://github.com/user-attachments/assets/5bdec026-09a1-42cc-bdff-f38c7a953dbf" />
 
+---
 ## Summary
 
 ### Power Summary
@@ -111,8 +120,11 @@ The architecture also handles special floating-point values such as NaN, Infinit
 ### Timing
 <img width="1267" height="404" alt="image" src="https://github.com/user-attachments/assets/4a79c42c-5352-4a1a-aa5a-34b95a446eaa" />
 
+---
+
 ## Resources
 The below listed websites are used to debug our code easily according to result
  - [IEEE-754 Converter](https://numeral-systems.com/ieee-754-converter/)
  - [Floating Point Multiplier](https://numeral-systems.com/ieee-754-multiply/)
 
+---
