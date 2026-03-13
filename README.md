@@ -87,7 +87,6 @@ The architecture also handles special floating-point values such as NaN, Infinit
 
 
 ### hw_vio_1
-<img width="1196" height="471" alt="Screenshot 2026-03-12 174029" src="https://github.com/user-attachments/assets/ea4ceca8-e055-4030-a509-45d85b792c79" />
 
 <img width="838" height="450" alt="image" src="https://github.com/user-attachments/assets/60ea1693-dc09-43e4-9df6-cbee60961a0f" />
 
