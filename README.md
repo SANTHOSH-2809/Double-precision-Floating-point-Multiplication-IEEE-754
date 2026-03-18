@@ -126,6 +126,6 @@ The architecture also handles special floating-point values such as NaN, Infinit
 The below listed websites are used to debug our code easily according to result
  - [IEEE-754 Converter](https://numeral-systems.com/ieee-754-converter/)
  - [Floating Point Multiplier](https://numeral-systems.com/ieee-754-multiply/)
- - [Zip-file](floaingpoint.zip)
+ - [Zip-file](floaingpoint.zip) Download the raw file and open the Vivado Project File(type of file) then rerun the process from syntheis to bit-stream generation.
 
 ---
