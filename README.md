@@ -109,7 +109,7 @@ The multiplier follows these steps:
 ---
 ## Block Diagram
 
-![Block Diagram for floating point multiplication](https://github.com/user-attachments/assets/24ef82c5-4811-432b-a6ef-9ac5539c6c9b)
+[Block Diagram for floating point multiplication](https://github.com/user-attachments/assets/c9748242-2738-4481-80bc-7dcaac49d7ba)
 
 ---
 ## Range in Magnitude
