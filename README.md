@@ -132,3 +132,8 @@ The below listed websites are used to debug our code easily according to result
  - [Zip-file](floaingpoint.zip) Download the raw file and open the Vivado Project File(type of file) then rerun the process from syntheis to bit-stream generation.
 
 ---
+
+## Next Phase
+Integrate posit arithmetic into the design to enhance precision, optimize dynamic range, and explore next-generation number systems beyond IEEE-754 for high-performance computing applications.
+
+---
