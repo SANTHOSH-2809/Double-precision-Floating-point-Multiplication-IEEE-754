@@ -165,7 +165,10 @@ The below listed websites are used to debug our code easily according to result
 
 ---
 
-## Next Phase
-Integrate posit arithmetic into the design to enhance precision, optimize dynamic range, and explore next-generation number systems beyond IEEE-754 for high-performance computing applications.
+## Future Work
+- Implement IEEE-754 rounding (round-to-nearest-even)
+- Add support for subnormal numbers
+- Pipeline the design for high-speed applications
+- Extend design to posit arithmetic for improved precision
 
 ---
