@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Repository QR Code</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Arial', sans-serif;
+        }
+        .container {
+            text-align: center;
+            background: white;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 24px;
+        }
+        p {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        #qrcode {
+            padding: 20px;
+            background: white;
+        }
+        a {
+            color: #667eea;
+            text-decoration: none;
+            word-break: break-all;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>GitHub Repository QR Code</h1>
+        <p>Double-precision-Floating-point-Multiplication-IEEE-754</p>
+        <div id="qrcode"></div>
+        <p style="margin-top: 30px;">
+            <a href="https://github.com/SANTHOSH-2809/Double-precision-Floating-point-Multiplication-IEEE-754" target="_blank">
+                https://github.com/SANTHOSH-2809/Double-precision-Floating-point-Multiplication-IEEE-754
+            </a>
+        </p>
+    </div>
+
+    <script>
+        // Generate QR code for the repository URL
+        new QRCode(document.getElementById("qrcode"), {
+            text: "https://github.com/SANTHOSH-2809/Double-precision-Floating-point-Multiplication-IEEE-754",
+            width: 300,
+            height: 300,
+            colorDark: "#000000",
+            colorLight: "#ffffff",
+            correctLevel: QRCode.CorrectLevel.H
+        });
+    </script>
+</body>
+</html>
