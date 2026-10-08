@@ -1,0 +1,2372 @@
+`timescale 1ns / 1ps
+
+// ============================================================================
+// FINAL SELF-CHECKING TESTBENCH
+// IEEE-754 BINARY64 FLOATING-POINT MULTIPLIER
+//
+// This testbench is intentionally independent from the DUT algorithm.
+//
+// Reference model:
+//   - Represents every finite operand as: integer_significand * 2^scale
+//   - Multiplies the exact integer significands
+//   - Finds the leading product bit independently
+//   - Performs its own exact right-shift rounding
+//   - Generates G/R/S bits independently
+//   - Applies all five rounding modes
+//   - Handles gradual underflow independently
+//
+// Verification:
+//   - Directed IEEE-754 corner cases
+//   - All five rounding modes
+//   - Zero / signed zero
+//   - Normal / subnormal operands
+//   - Subnormal result / gradual underflow
+//   - Halfway rounding
+//   - Positive / negative overflow
+//   - Infinity
+//   - QNaN / SNaN
+//   - Exception flags
+//   - 10,000 deterministic random finite tests
+//
+// Coverage:
+//   - Operand classes
+//   - Result classes
+//   - Rounding modes
+//   - Sign combinations
+//   - Exception flags
+//   - Normal/subnormal combinations
+//   - Half-tie tests
+//   - Precision-boundary regression tests
+//
+// At the end:
+//   - All PASS/FAIL counts are printed.
+//   - A text coverage report is written to:
+//       fp_coverage_report.txt
+//
+// Compatible with Vivado/XSim 2018.3 using SystemVerilog (.sv).
+// Coverage counters are updated inline inside run_case for parser compatibility.
+// ============================================================================
+
+module tb_fp_final_selfcheck;
+
+    // =========================================================================
+    // DUT signals
+    // =========================================================================
+
+    reg [63:0] A;
+    reg [63:0] B;
+    reg [2:0]  rounding_mode;
+
+    wire [63:0] result;
+
+    wire invalid;
+    wire overflow;
+    wire underflow;
+    wire inexact;
+
+    // =========================================================================
+    // Counts
+    // =========================================================================
+
+    integer pass_count;
+    integer fail_count;
+    integer total_count;
+    integer random_count;
+
+    integer rm_count [0:4];
+
+    // Class:
+    //   0 = zero
+    //   1 = subnormal
+    //   2 = normal
+    //   3 = infinity
+    //   4 = NaN
+    integer a_class_count [0:4];
+    integer b_class_count [0:4];
+    integer result_class_count [0:4];
+
+    // Sign combination:
+    //   0 = +,+
+    //   1 = +,-
+    //   2 = -,+
+    //   3 = -,-
+    integer sign_combo_count [0:3];
+
+    // Operation-class coverage
+    integer zero_operation_count;
+    integer inf_zero_count;
+    integer nan_operation_count;
+    integer normal_normal_count;
+    integer normal_subnormal_count;
+    integer subnormal_normal_count;
+    integer subnormal_subnormal_count;
+
+    // Result/exception coverage
+    integer result_exact_count;
+    integer result_inexact_count;
+
+    integer invalid_count;
+    integer overflow_count;
+    integer underflow_count;
+    integer inexact_flag_count;
+
+    // Explicit rounding-boundary coverage
+    integer half_tie_count;
+
+    // Number of directed tests printed
+    integer directed_count;
+
+    integer report_fd;
+
+    // Coverage temporaries. These are module-scope for Vivado 2018.3.
+    integer cov_a_class;
+    integer cov_b_class;
+    integer cov_r_class;
+    integer cov_sign_index;
+
+    // Simple module-level controls for Vivado 2018.3 compatibility.
+    reg tb_verbose;
+    reg tb_mark_half_tie;
+
+    // Vivado 2018.3-compatible deterministic random seed.
+    integer random_seed;
+
+    // Vivado 2018.3 compatibility:
+    // Keep run_case temporary/reference variables at module scope.
+    reg [63:0]  expected_result;
+    reg         expected_invalid;
+    reg         expected_overflow;
+    reg         expected_underflow;
+    reg         expected_inexact;
+
+
+    // =========================================================================
+    // DUT
+    // =========================================================================
+
+    floatingpoint_ieee dut (
+        .A(A),
+        .B(B),
+        .rounding_mode(rounding_mode),
+        .final_product(result),
+        .invalid(invalid),
+        .overflow(overflow),
+        .underflow(underflow),
+        .inexact(inexact)
+    );
+
+    // =========================================================================
+    // Utility: classify a binary64 value
+    // =========================================================================
+
+    function integer class_of;
+        input [63:0] x;
+
+        begin
+            if (x[62:52] == 11'h7FF) begin
+
+                if (x[51:0] == 52'd0)
+                    class_of = 3;      // Infinity
+                else
+                    class_of = 4;      // NaN
+
+            end
+            else if (x[62:52] == 11'd0) begin
+
+                if (x[51:0] == 52'd0)
+                    class_of = 0;      // Zero
+                else
+                    class_of = 1;      // Subnormal
+
+            end
+            else begin
+
+                class_of = 2;          // Normal
+
+            end
+        end
+
+    endfunction
+
+    // =========================================================================
+    // Utility: rounding-mode name
+    // =========================================================================
+
+    function [8*24-1:0] rm_name;
+        input [2:0] rm;
+
+        begin
+            case (rm)
+                3'b000: rm_name = "RNE (ties-to-even)";
+                3'b001: rm_name = "RTZ (toward-zero)";
+                3'b010: rm_name = "RUP (toward-+inf)";
+                3'b011: rm_name = "RDN (toward--inf)";
+                3'b100: rm_name = "RNA (ties-to-away)";
+                default: rm_name = "UNSUPPORTED";
+            endcase
+        end
+
+    endfunction
+
+    // =========================================================================
+    // INDEPENDENT REFERENCE MODEL
+    //
+    // Exact finite operand representation:
+    //
+    //   value = significand * 2^scale
+    //
+    // Normal:
+    //   significand = 2^52 + fraction
+    //   scale = unbiased_exp - 52
+    //
+    // Subnormal:
+    //   significand = fraction
+    //   scale = -1074
+    //
+    // Thus:
+    //
+    //   exact_product = sig_a * sig_b * 2^(scale_a + scale_b)
+    //
+    // The reference model does NOT use the DUT's normalized-subnormal
+    // representation or datapath.
+    // =========================================================================
+
+    task reference_model;
+
+        input  [63:0] a_in;
+        input  [63:0] b_in;
+        input  [2:0]  rm_in;
+
+        output reg [63:0] ref_result;
+        output reg        ref_invalid;
+        output reg        ref_overflow;
+        output reg        ref_underflow;
+        output reg        ref_inexact;
+
+        // Fields
+        reg sign_a_ref;
+        reg sign_b_ref;
+        reg sign_r_ref;
+
+        reg [10:0] exp_a_ref;
+        reg [10:0] exp_b_ref;
+
+        reg [51:0] frac_a_ref;
+        reg [51:0] frac_b_ref;
+
+        // Classes
+        reg a_nan_ref;
+        reg b_nan_ref;
+        reg a_snan_ref;
+        reg b_snan_ref;
+        reg a_inf_ref;
+        reg b_inf_ref;
+        reg a_zero_ref;
+        reg b_zero_ref;
+        reg a_sub_ref;
+        reg b_sub_ref;
+
+        // Exact representation
+        reg [52:0] sig_a_ref;
+        reg [52:0] sig_b_ref;
+
+        reg [105:0] product_ref;
+
+        integer scale_a_ref;
+        integer scale_b_ref;
+        integer scale_sum_ref;
+
+        integer leading_bit_ref;
+        integer i_ref;
+        reg found_ref;
+
+        // Normal result
+        integer unbiased_result_ref;
+        integer normal_shift_ref;
+        reg [10:0] exp_field_ref;
+
+        // Subnormal result
+        integer sub_power_ref;
+        integer sub_shift_ref;
+
+        // Rounded integer significand
+        reg [53:0] q_base_ref;
+        reg [53:0] q_round_ref;
+        reg [52:0] sub_round_ref;
+
+        // G/R/S
+        reg guard_ref;
+        reg round_ref;
+        reg sticky_ref;
+
+        reg round_increment_ref;
+
+        begin
+
+            // =================================================================
+            // Defaults
+            // =================================================================
+
+            ref_result    = 64'h0000000000000000;
+            ref_invalid   = 1'b0;
+            ref_overflow  = 1'b0;
+            ref_underflow = 1'b0;
+            ref_inexact   = 1'b0;
+
+            exp_field_ref = 11'd0;
+
+            sign_a_ref = a_in[63];
+            sign_b_ref = b_in[63];
+            sign_r_ref = sign_a_ref ^ sign_b_ref;
+
+            exp_a_ref = a_in[62:52];
+            exp_b_ref = b_in[62:52];
+
+            frac_a_ref = a_in[51:0];
+            frac_b_ref = b_in[51:0];
+
+            // =================================================================
+            // Classification
+            // =================================================================
+
+            a_nan_ref = (exp_a_ref == 11'h7FF) &&
+                        (frac_a_ref != 52'd0);
+
+            b_nan_ref = (exp_b_ref == 11'h7FF) &&
+                        (frac_b_ref != 52'd0);
+
+            a_snan_ref = a_nan_ref && (frac_a_ref[51] == 1'b0);
+            b_snan_ref = b_nan_ref && (frac_b_ref[51] == 1'b0);
+
+            a_inf_ref = (exp_a_ref == 11'h7FF) &&
+                        (frac_a_ref == 52'd0);
+
+            b_inf_ref = (exp_b_ref == 11'h7FF) &&
+                        (frac_b_ref == 52'd0);
+
+            a_zero_ref = (exp_a_ref == 11'd0) &&
+                         (frac_a_ref == 52'd0);
+
+            b_zero_ref = (exp_b_ref == 11'd0) &&
+                         (frac_b_ref == 52'd0);
+
+            a_sub_ref = (exp_a_ref == 11'd0) &&
+                        (frac_a_ref != 52'd0);
+
+            b_sub_ref = (exp_b_ref == 11'd0) &&
+                        (frac_b_ref != 52'd0);
+
+            // Signaling NaN or infinity*zero -> invalid.
+            if (a_snan_ref || b_snan_ref)
+                ref_invalid = 1'b1;
+
+            if ((a_inf_ref && b_zero_ref) ||
+                (a_zero_ref && b_inf_ref))
+                ref_invalid = 1'b1;
+
+            // =================================================================
+            // NaN
+            // =================================================================
+
+            if (a_nan_ref) begin
+
+                ref_result =
+                    {1'b0,
+                     11'h7FF,
+                     1'b1,
+                     frac_a_ref[50:0]};
+
+            end
+
+            else if (b_nan_ref) begin
+
+                ref_result =
+                    {1'b0,
+                     11'h7FF,
+                     1'b1,
+                     frac_b_ref[50:0]};
+
+            end
+
+            // =================================================================
+            // Infinity * zero
+            // =================================================================
+
+            else if ((a_inf_ref && b_zero_ref) ||
+                     (a_zero_ref && b_inf_ref)) begin
+
+                ref_result = 64'h7FF8_0000_0000_0000;
+
+            end
+
+            // =================================================================
+            // Infinity
+            // =================================================================
+
+            else if (a_inf_ref || b_inf_ref) begin
+
+                ref_result =
+                    {sign_r_ref,
+                     11'h7FF,
+                     52'd0};
+
+            end
+
+            // =================================================================
+            // Zero
+            // =================================================================
+
+            else if (a_zero_ref || b_zero_ref) begin
+
+                ref_result =
+                    {sign_r_ref,
+                     63'd0};
+
+            end
+
+            // =================================================================
+            // FINITE NON-ZERO
+            // =================================================================
+
+            else begin
+
+                // -------------------------------------------------------------
+                // Exact operand representation
+                // -------------------------------------------------------------
+
+                if (a_sub_ref) begin
+                    sig_a_ref   = {1'b0, frac_a_ref};
+                    scale_a_ref = -1074;
+                end
+                else begin
+                    sig_a_ref   = {1'b1, frac_a_ref};
+                    scale_a_ref =
+                        $signed({1'b0, exp_a_ref}) - 13'sd1023 - 52;
+                end
+
+                if (b_sub_ref) begin
+                    sig_b_ref   = {1'b0, frac_b_ref};
+                    scale_b_ref = -1074;
+                end
+                else begin
+                    sig_b_ref   = {1'b1, frac_b_ref};
+                    scale_b_ref =
+                        $signed({1'b0, exp_b_ref}) - 13'sd1023 - 52;
+                end
+
+                scale_sum_ref =
+                    scale_a_ref + scale_b_ref;
+
+                // -------------------------------------------------------------
+                // Exact 106-bit integer product
+                // -------------------------------------------------------------
+
+                product_ref =
+                    {53'd0, sig_a_ref} *
+                    {53'd0, sig_b_ref};
+
+                // -------------------------------------------------------------
+                // Find highest product bit
+                // -------------------------------------------------------------
+
+                leading_bit_ref = -1;
+                found_ref = 1'b0;
+
+                for (i_ref = 105; i_ref >= 0; i_ref = i_ref - 1) begin
+
+                    if (!found_ref && product_ref[i_ref]) begin
+
+                        leading_bit_ref = i_ref;
+                        found_ref = 1'b1;
+
+                    end
+
+                end
+
+                // Product cannot be zero for finite non-zero operands,
+                // but keep a defensive path.
+                if (leading_bit_ref < 0) begin
+
+                    ref_result =
+                        {sign_r_ref, 63'd0};
+
+                end
+
+                else begin
+
+                    // ---------------------------------------------------------
+                    // Exact normalized exponent
+                    // ---------------------------------------------------------
+
+                    unbiased_result_ref =
+                        leading_bit_ref + scale_sum_ref;
+
+                    // =========================================================
+                    // NORMAL RESULT
+                    // =========================================================
+
+                    if (unbiased_result_ref >= -1022) begin
+
+                        // Keep 53 significant bits.
+                        normal_shift_ref =
+                            leading_bit_ref - 52;
+
+                        // -----------------------------------------------------
+                        // Truncated significand
+                        // -----------------------------------------------------
+
+                        if (normal_shift_ref <= 0) begin
+                            q_base_ref =
+                                product_ref << (-normal_shift_ref);
+                        end
+                        else if (normal_shift_ref <= 105) begin
+                            q_base_ref =
+                                product_ref >> normal_shift_ref;
+                        end
+                        else begin
+                            q_base_ref = 54'd0;
+                        end
+
+                        // -----------------------------------------------------
+                        // G/R/S
+                        // -----------------------------------------------------
+
+                        guard_ref = 1'b0;
+                        round_ref = 1'b0;
+                        sticky_ref = 1'b0;
+
+                        if ((normal_shift_ref >= 1) &&
+                            (normal_shift_ref <= 106))
+                            guard_ref =
+                                product_ref[normal_shift_ref - 1];
+
+                        if ((normal_shift_ref >= 2) &&
+                            (normal_shift_ref <= 107))
+                            round_ref =
+                                product_ref[normal_shift_ref - 2];
+
+                        if (normal_shift_ref >= 3) begin
+
+                            if ((normal_shift_ref - 3) >= 105) begin
+
+                                sticky_ref = |product_ref;
+
+                            end
+                            else begin
+
+                                sticky_ref = 1'b0;
+
+                                for (i_ref = 0;
+                                     i_ref < 106;
+                                     i_ref = i_ref + 1) begin
+
+                                    if (i_ref <= normal_shift_ref - 3)
+                                        sticky_ref =
+                                            sticky_ref |
+                                            product_ref[i_ref];
+
+                                end
+
+                            end
+
+                        end
+
+                        ref_inexact =
+                            guard_ref |
+                            round_ref |
+                            sticky_ref;
+
+                        // -----------------------------------------------------
+                        // Rounding
+                        // -----------------------------------------------------
+
+                        round_increment_ref = 1'b0;
+
+                        case (rm_in)
+
+                            // RoundTiesToEven
+                            3'b000: begin
+
+                                if (guard_ref &&
+                                    (round_ref ||
+                                     sticky_ref ||
+                                     q_base_ref[0]))
+                                    round_increment_ref = 1'b1;
+
+                            end
+
+                            // RoundTowardZero
+                            3'b001: begin
+
+                                round_increment_ref = 1'b0;
+
+                            end
+
+                            // RoundTowardPositive
+                            3'b010: begin
+
+                                round_increment_ref =
+                                    (!sign_r_ref) &&
+                                    ref_inexact;
+
+                            end
+
+                            // RoundTowardNegative
+                            3'b011: begin
+
+                                round_increment_ref =
+                                    sign_r_ref &&
+                                    ref_inexact;
+
+                            end
+
+                            // RoundTiesToAway
+                            3'b100: begin
+
+                                if (guard_ref)
+                                    round_increment_ref = 1'b1;
+
+                            end
+
+                            default: begin
+
+                                if (guard_ref &&
+                                    (round_ref ||
+                                     sticky_ref ||
+                                     q_base_ref[0]))
+                                    round_increment_ref = 1'b1;
+
+                            end
+
+                        endcase
+
+                        // -----------------------------------------------------
+                        // Apply rounding
+                        // -----------------------------------------------------
+
+                        q_round_ref =
+                            q_base_ref +
+                            (round_increment_ref ? 54'd1 : 54'd0);
+
+                        // Carry from:
+                        //   1.111... -> 10.000...
+                        if (q_round_ref[53]) begin
+
+                            q_round_ref =
+                                54'h2000_0000_0000_00;
+
+                            unbiased_result_ref =
+                                unbiased_result_ref + 1;
+
+                        end
+
+                        // -----------------------------------------------------
+                        // Overflow
+                        // -----------------------------------------------------
+
+                        if (unbiased_result_ref > 1023) begin
+
+                            ref_overflow = 1'b1;
+                            ref_inexact = 1'b1;
+
+                            if ((rm_in == 3'b000) ||
+                                (rm_in == 3'b100) ||
+                                ((rm_in == 3'b010) &&
+                                 !sign_r_ref) ||
+                                ((rm_in == 3'b011) &&
+                                 sign_r_ref)) begin
+
+                                ref_result =
+                                    {sign_r_ref,
+                                     11'h7FF,
+                                     52'd0};
+
+                            end
+                            else begin
+
+                                ref_result =
+                                    {sign_r_ref,
+                                     11'h7FE,
+                                     52'hFFFF_FFFF_FFFFF};
+
+                            end
+
+                        end
+
+                        // -----------------------------------------------------
+                        // Pack normal result
+                        // -----------------------------------------------------
+
+                        else begin
+
+                            exp_field_ref =
+                                unbiased_result_ref + 1023;
+
+                            ref_result =
+                                {sign_r_ref,
+                                 exp_field_ref,
+                                 q_round_ref[51:0]};
+
+                        end
+
+                    end
+
+                    // =========================================================
+                    // SUBNORMAL / GRADUAL UNDERFLOW
+                    // =========================================================
+
+                    else begin
+
+                        // To express the exact result in minimum-subnormal
+                        // units:
+                        //
+                        //   q_exact =
+                        //       product * 2^(scale_sum + 1074)
+                        //
+                        sub_power_ref =
+                            scale_sum_ref + 1074;
+
+                        guard_ref = 1'b0;
+                        round_ref = 1'b0;
+                        sticky_ref = 1'b0;
+
+                        if (sub_power_ref >= 0) begin
+
+                            // Exact integer result; no bits discarded.
+                            q_base_ref =
+                                product_ref << sub_power_ref;
+
+                        end
+
+                        else begin
+
+                            sub_shift_ref =
+                                -sub_power_ref;
+
+                            if (sub_shift_ref <= 105)
+                                q_base_ref =
+                                    product_ref >> sub_shift_ref;
+                            else
+                                q_base_ref = 54'd0;
+
+                            // -------------------------------------------------
+                            // G/R/S for the subnormal shift
+                            // -------------------------------------------------
+
+                            if ((sub_shift_ref >= 1) &&
+                                (sub_shift_ref <= 106))
+                                guard_ref =
+                                    product_ref[sub_shift_ref - 1];
+
+                            if ((sub_shift_ref >= 2) &&
+                                (sub_shift_ref <= 107))
+                                round_ref =
+                                    product_ref[sub_shift_ref - 2];
+
+                            if (sub_shift_ref >= 3) begin
+
+                                if ((sub_shift_ref - 3) >= 105) begin
+
+                                    sticky_ref = |product_ref;
+
+                                end
+                                else begin
+
+                                    sticky_ref = 1'b0;
+
+                                    for (i_ref = 0;
+                                         i_ref < 106;
+                                         i_ref = i_ref + 1) begin
+
+                                        if (i_ref <= sub_shift_ref - 3)
+                                            sticky_ref =
+                                                sticky_ref |
+                                                product_ref[i_ref];
+
+                                    end
+
+                                end
+
+                            end
+
+                        end
+
+                        ref_inexact =
+                            guard_ref |
+                            round_ref |
+                            sticky_ref;
+
+                        // -----------------------------------------------------
+                        // Rounding decision
+                        // -----------------------------------------------------
+
+                        round_increment_ref = 1'b0;
+
+                        case (rm_in)
+
+                            3'b000: begin
+
+                                if (guard_ref &&
+                                    (round_ref ||
+                                     sticky_ref ||
+                                     q_base_ref[0]))
+                                    round_increment_ref = 1'b1;
+
+                            end
+
+                            3'b001: begin
+
+                                round_increment_ref = 1'b0;
+
+                            end
+
+                            3'b010: begin
+
+                                round_increment_ref =
+                                    (!sign_r_ref) &&
+                                    ref_inexact;
+
+                            end
+
+                            3'b011: begin
+
+                                round_increment_ref =
+                                    sign_r_ref &&
+                                    ref_inexact;
+
+                            end
+
+                            3'b100: begin
+
+                                if (guard_ref)
+                                    round_increment_ref = 1'b1;
+
+                            end
+
+                            default: begin
+
+                                if (guard_ref &&
+                                    (round_ref ||
+                                     sticky_ref ||
+                                     q_base_ref[0]))
+                                    round_increment_ref = 1'b1;
+
+                            end
+
+                        endcase
+
+                        // -----------------------------------------------------
+                        // Apply rounding
+                        // -----------------------------------------------------
+
+                        sub_round_ref =
+                            q_base_ref[52:0] +
+                            (round_increment_ref ? 53'd1 : 53'd0);
+
+                        // -----------------------------------------------------
+                        // Rounding reaches minimum normal
+                        // -----------------------------------------------------
+
+                        if (sub_round_ref[52]) begin
+
+                            ref_result =
+                                {sign_r_ref,
+                                 11'd1,
+                                 52'd0};
+
+                            // Tininess detected after rounding.
+                            ref_underflow = 1'b0;
+
+                        end
+
+                        // -----------------------------------------------------
+                        // Genuine subnormal result
+                        // -----------------------------------------------------
+
+                        else begin
+
+                            ref_result =
+                                {sign_r_ref,
+                                 11'd0,
+                                 sub_round_ref[51:0]};
+
+                            ref_underflow =
+                                ref_inexact;
+
+                        end
+
+                    end
+
+                end
+
+            end
+
+        end
+
+
+    // =========================================================================
+    // Coverage update
+    // =========================================================================
+
+    endtask
+
+    // =========================================================================
+    // Self-checking task
+    // =========================================================================
+
+    task run_case;
+
+        input [63:0]  a_in;
+        input [63:0]  b_in;
+        input [2:0]   rm_in;
+        input [255:0] test_name;
+
+        begin
+
+            // -------------------------------------------------------------
+            // Independent reference calculation
+            // -------------------------------------------------------------
+
+            reference_model(
+                a_in,
+                b_in,
+                rm_in,
+
+                expected_result,
+
+                expected_invalid,
+                expected_overflow,
+                expected_underflow,
+                expected_inexact
+            );
+
+            // -------------------------------------------------------------
+            // Drive DUT
+            // -------------------------------------------------------------
+
+            A = a_in;
+            B = b_in;
+            rounding_mode = rm_in;
+
+            #1;
+
+            total_count =
+                total_count + 1;
+
+            if (tb_mark_half_tie)
+                half_tie_count =
+                    half_tie_count + 1;
+
+            // ---------------------------------------------------------
+            // Coverage counters
+            //
+            // Kept inline instead of using a separate coverage task.
+            // This avoids task-argument parsing problems seen in some
+            // Vivado 2018.3/XSim configurations.
+            // ---------------------------------------------------------
+            cov_a_class = class_of(a_in);
+            cov_b_class = class_of(b_in);
+            cov_r_class = class_of(result);
+
+            a_class_count[cov_a_class] =
+                a_class_count[cov_a_class] + 1;
+
+            b_class_count[cov_b_class] =
+                b_class_count[cov_b_class] + 1;
+
+            result_class_count[cov_r_class] =
+                result_class_count[cov_r_class] + 1;
+
+            if (rm_in <= 3'b100)
+                rm_count[rm_in] =
+                    rm_count[rm_in] + 1;
+
+            cov_sign_index =
+                {a_in[63], b_in[63]};
+
+            sign_combo_count[cov_sign_index] =
+                sign_combo_count[cov_sign_index] + 1;
+
+            if ((cov_a_class == 0) || (cov_b_class == 0))
+                zero_operation_count =
+                    zero_operation_count + 1;
+
+            if (((cov_a_class == 3) && (cov_b_class == 0)) ||
+                ((cov_a_class == 0) && (cov_b_class == 3)))
+                inf_zero_count =
+                    inf_zero_count + 1;
+
+            if ((cov_a_class == 4) || (cov_b_class == 4))
+                nan_operation_count =
+                    nan_operation_count + 1;
+
+            if ((cov_a_class == 2) && (cov_b_class == 2))
+                normal_normal_count =
+                    normal_normal_count + 1;
+
+            if ((cov_a_class == 2) && (cov_b_class == 1))
+                normal_subnormal_count =
+                    normal_subnormal_count + 1;
+
+            if ((cov_a_class == 1) && (cov_b_class == 2))
+                subnormal_normal_count =
+                    subnormal_normal_count + 1;
+
+            if ((cov_a_class == 1) && (cov_b_class == 1))
+                subnormal_subnormal_count =
+                    subnormal_subnormal_count + 1;
+
+            if (inexact)
+                result_inexact_count =
+                    result_inexact_count + 1;
+            else
+                result_exact_count =
+                    result_exact_count + 1;
+
+            if (invalid)
+                invalid_count = invalid_count + 1;
+
+            if (overflow)
+                overflow_count = overflow_count + 1;
+
+            if (underflow)
+                underflow_count = underflow_count + 1;
+
+            if (inexact)
+                inexact_flag_count = inexact_flag_count + 1;
+
+            // -------------------------------------------------------------
+            // Compare result + all flags
+            // -------------------------------------------------------------
+
+            if ((result === expected_result) &&
+                (invalid === expected_invalid) &&
+                (overflow === expected_overflow) &&
+                (underflow === expected_underflow) &&
+                (inexact === expected_inexact)) begin
+
+                pass_count =
+                    pass_count + 1;
+
+                if (tb_verbose) begin
+
+                    $display(
+                        "[PASS] %0s | RM=%b | RESULT=%h",
+                        test_name,
+                        rm_in,
+                        result
+                    );
+
+                end
+
+            end
+            else begin
+
+                fail_count =
+                    fail_count + 1;
+
+                $display("");
+                $display(
+                    "[FAIL] %0s | RM=%b",
+                    test_name,
+                    rm_in
+                );
+
+                $display(
+                    "       A          = %h",
+                    a_in
+                );
+
+                $display(
+                    "       B          = %h",
+                    b_in
+                );
+
+                $display(
+                    "       Expected   = %h",
+                    expected_result
+                );
+
+                $display(
+                    "       Actual     = %h",
+                    result
+                );
+
+                $display(
+                    "       Expected F = I:%b O:%b U:%b X:%b",
+                    expected_invalid,
+                    expected_overflow,
+                    expected_underflow,
+                    expected_inexact
+                );
+
+                $display(
+                    "       Actual F   = I:%b O:%b U:%b X:%b",
+                    invalid,
+                    overflow,
+                    underflow,
+                    inexact
+                );
+
+                $display("");
+
+            end
+
+        end
+
+    endtask
+
+    // =========================================================================
+    // All five rounding modes
+    // =========================================================================
+
+    task run_all_rounding_modes;
+
+        input [63:0]  a_in;
+        input [63:0]  b_in;
+        input [255:0] test_name;
+
+        begin
+
+            run_case(
+                a_in, b_in, 3'b000,
+                test_name
+            );
+
+            run_case(
+                a_in, b_in, 3'b001,
+                test_name
+            );
+
+            run_case(
+                a_in, b_in, 3'b010,
+                test_name
+            );
+
+            run_case(
+                a_in, b_in, 3'b011,
+                test_name
+            );
+
+            run_case(
+                a_in, b_in, 3'b100,
+                test_name
+            );
+
+        end
+
+    endtask
+
+    // =========================================================================
+    // Deterministic random finite generator
+    // =========================================================================
+
+    task random_finite_value;
+
+        output [63:0] random_value;
+
+        integer choice;
+        integer exponent_choice;
+        reg [31:0] r0;
+        reg [31:0] r1;
+        reg [31:0] r2;
+
+        begin
+
+            // Use only Verilog $random, which is supported by Vivado 2018.3.
+            r0 = $random(random_seed);
+            r1 = $random(random_seed);
+            r2 = $random(random_seed);
+
+            random_value[63] = r0[0];
+
+            choice = r1 % 100;
+
+            if (choice < 15) begin
+
+                // Subnormal.
+                random_value[62:52] = 11'd0;
+
+                random_value[51:20] = r2;
+                random_value[19:0]  = r0[19:0];
+
+                if (random_value[51:0] == 52'd0)
+                    random_value[0] = 1'b1;
+
+            end
+            else begin
+
+                exponent_choice = r2 % 100;
+
+                if (exponent_choice < 20) begin
+
+                    random_value[62:52] =
+                        (r0 % 10) + 1;
+
+                end
+                else if (exponent_choice < 50) begin
+
+                    random_value[62:52] =
+                        (r0 % 21) + 1013;
+
+                end
+                else if (exponent_choice < 75) begin
+
+                    random_value[62:52] =
+                        (r0 % 10) + 2037;
+
+                end
+                else begin
+
+                    random_value[62:52] =
+                        (r0 % 2046) + 1;
+
+                end
+
+                random_value[51:20] = r1;
+                random_value[19:0]  = r2[19:0];
+
+            end
+
+        end
+
+    endtask
+
+    // =========================================================================
+    // Coverage report
+    // =========================================================================
+
+    task write_coverage_report;
+
+        integer i_cov;
+        integer coverage_failures;
+
+        begin
+
+            coverage_failures = 0;
+
+            // -------------------------------------------------------------
+            // Mandatory coverage bins
+            // -------------------------------------------------------------
+
+            for (i_cov = 0; i_cov < 5; i_cov = i_cov + 1) begin
+                if (rm_count[i_cov] == 0)
+                    coverage_failures =
+                        coverage_failures + 1;
+
+                if (a_class_count[i_cov] == 0)
+                    coverage_failures =
+                        coverage_failures + 1;
+
+                if (b_class_count[i_cov] == 0)
+                    coverage_failures =
+                        coverage_failures + 1;
+
+                if (result_class_count[i_cov] == 0)
+                    coverage_failures =
+                        coverage_failures + 1;
+            end
+
+            for (i_cov = 0; i_cov < 4; i_cov = i_cov + 1) begin
+                if (sign_combo_count[i_cov] == 0)
+                    coverage_failures =
+                        coverage_failures + 1;
+            end
+
+            if (half_tie_count == 0)
+                coverage_failures =
+                    coverage_failures + 1;
+
+            if (invalid_count == 0)
+                coverage_failures =
+                    coverage_failures + 1;
+
+            if (overflow_count == 0)
+                coverage_failures =
+                    coverage_failures + 1;
+
+            if (underflow_count == 0)
+                coverage_failures =
+                    coverage_failures + 1;
+
+            if (inexact_flag_count == 0)
+                coverage_failures =
+                    coverage_failures + 1;
+
+            if (normal_normal_count == 0)
+                coverage_failures =
+                    coverage_failures + 1;
+
+            if (normal_subnormal_count == 0)
+                coverage_failures =
+                    coverage_failures + 1;
+
+            if (subnormal_normal_count == 0)
+                coverage_failures =
+                    coverage_failures + 1;
+
+            if (subnormal_subnormal_count == 0)
+                coverage_failures =
+                    coverage_failures + 1;
+
+            // -------------------------------------------------------------
+            // Console report
+            // -------------------------------------------------------------
+
+            $display("");
+            $display(
+                "============================================================"
+            );
+            $display(
+                " FINAL IEEE-754 SELF-CHECK SUMMARY"
+            );
+            $display(
+                "============================================================"
+            );
+
+            $display(
+                "Total tests : %0d",
+                total_count
+            );
+
+            $display(
+                "Passed      : %0d",
+                pass_count
+            );
+
+            $display(
+                "Failed      : %0d",
+                fail_count
+            );
+
+            $display(
+                "Random      : %0d",
+                random_count
+            );
+
+            $display(
+                "------------------------------------------------------------"
+            );
+
+            $display(
+                "Rounding mode coverage:"
+            );
+
+            $display(
+                "  RNE = %0d",
+                rm_count[0]
+            );
+
+            $display(
+                "  RTZ = %0d",
+                rm_count[1]
+            );
+
+            $display(
+                "  RUP = %0d",
+                rm_count[2]
+            );
+
+            $display(
+                "  RDN = %0d",
+                rm_count[3]
+            );
+
+            $display(
+                "  RNA = %0d",
+                rm_count[4]
+            );
+
+            $display(
+                "------------------------------------------------------------"
+            );
+
+            $display(
+                "Operand class coverage:"
+            );
+
+            $display(
+                "  A: ZERO=%0d SUBNORMAL=%0d NORMAL=%0d INF=%0d NAN=%0d",
+                a_class_count[0],
+                a_class_count[1],
+                a_class_count[2],
+                a_class_count[3],
+                a_class_count[4]
+            );
+
+            $display(
+                "  B: ZERO=%0d SUBNORMAL=%0d NORMAL=%0d INF=%0d NAN=%0d",
+                b_class_count[0],
+                b_class_count[1],
+                b_class_count[2],
+                b_class_count[3],
+                b_class_count[4]
+            );
+
+            $display(
+                "  R: ZERO=%0d SUBNORMAL=%0d NORMAL=%0d INF=%0d NAN=%0d",
+                result_class_count[0],
+                result_class_count[1],
+                result_class_count[2],
+                result_class_count[3],
+                result_class_count[4]
+            );
+
+            $display(
+                "------------------------------------------------------------"
+            );
+
+            $display(
+                "Sign coverage:"
+            );
+
+            $display(
+                "  +,+ = %0d",
+                sign_combo_count[0]
+            );
+
+            $display(
+                "  +,- = %0d",
+                sign_combo_count[1]
+            );
+
+            $display(
+                "  -,+ = %0d",
+                sign_combo_count[2]
+            );
+
+            $display(
+                "  -,- = %0d",
+                sign_combo_count[3]
+            );
+
+            $display(
+                "------------------------------------------------------------"
+            );
+
+            $display(
+                "Operation-class coverage:"
+            );
+
+            $display(
+                "  NORMAL * NORMAL         = %0d",
+                normal_normal_count
+            );
+
+            $display(
+                "  NORMAL * SUBNORMAL     = %0d",
+                normal_subnormal_count
+            );
+
+            $display(
+                "  SUBNORMAL * NORMAL     = %0d",
+                subnormal_normal_count
+            );
+
+            $display(
+                "  SUBNORMAL * SUBNORMAL  = %0d",
+                subnormal_subnormal_count
+            );
+
+            $display(
+                "  ZERO-related            = %0d",
+                zero_operation_count
+            );
+
+            $display(
+                "  INF * ZERO              = %0d",
+                inf_zero_count
+            );
+
+            $display(
+                "  NaN-related             = %0d",
+                nan_operation_count
+            );
+
+            $display(
+                "------------------------------------------------------------"
+            );
+
+            $display(
+                "Exception coverage:"
+            );
+
+            $display(
+                "  INVALID                 = %0d",
+                invalid_count
+            );
+
+            $display(
+                "  OVERFLOW                = %0d",
+                overflow_count
+            );
+
+            $display(
+                "  UNDERFLOW               = %0d",
+                underflow_count
+            );
+
+            $display(
+                "  INEXACT                 = %0d",
+                inexact_flag_count
+            );
+
+            $display(
+                "  EXACT results           = %0d",
+                result_exact_count
+            );
+
+            $display(
+                "  HALF-TIE tests          = %0d",
+                half_tie_count
+            );
+
+            $display(
+                "------------------------------------------------------------"
+            );
+
+            if ((fail_count == 0) &&
+                (coverage_failures == 0)) begin
+
+                $display(
+                    "RESULT      : ALL TESTS PASSED"
+                );
+
+                $display(
+                    "COVERAGE    : REQUIRED BINS COVERED"
+                );
+
+            end
+            else begin
+
+                $display(
+                    "RESULT      : VERIFICATION FAILED"
+                );
+
+                $display(
+                    "COVERAGE    : %0d REQUIRED BIN(S) NOT COVERED",
+                    coverage_failures
+                );
+
+            end
+
+            $display(
+                "============================================================"
+            );
+
+            // -------------------------------------------------------------
+            // File report
+            // -------------------------------------------------------------
+
+            report_fd =
+                $fopen("fp_coverage_report.txt", "w");
+
+            if (report_fd != 0) begin
+
+                $fwrite(
+                    report_fd,
+                    "IEEE-754 BINARY64 MULTIPLIER VERIFICATION REPORT\n"
+                );
+
+                $fwrite(
+                    report_fd,
+                    "============================================================\n"
+                );
+
+                $fwrite(
+                    report_fd,
+                    "Total tests : %0d\n",
+                    total_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "Passed      : %0d\n",
+                    pass_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "Failed      : %0d\n",
+                    fail_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "Random      : %0d\n\n",
+                    random_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "ROUNDING MODE COVERAGE\n"
+                );
+
+                for (i_cov = 0;
+                     i_cov < 5;
+                     i_cov = i_cov + 1) begin
+
+                    $fwrite(
+                        report_fd,
+                        "  RM[%0d] = %0d\n",
+                        i_cov,
+                        rm_count[i_cov]
+                    );
+
+                end
+
+                $fwrite(
+                    report_fd,
+                    "\nOPERAND/RESULT CLASS COVERAGE\n"
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  Class 0 ZERO       : A=%0d B=%0d R=%0d\n",
+                    a_class_count[0],
+                    b_class_count[0],
+                    result_class_count[0]
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  Class 1 SUBNORMAL  : A=%0d B=%0d R=%0d\n",
+                    a_class_count[1],
+                    b_class_count[1],
+                    result_class_count[1]
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  Class 2 NORMAL     : A=%0d B=%0d R=%0d\n",
+                    a_class_count[2],
+                    b_class_count[2],
+                    result_class_count[2]
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  Class 3 INFINITY   : A=%0d B=%0d R=%0d\n",
+                    a_class_count[3],
+                    b_class_count[3],
+                    result_class_count[3]
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  Class 4 NaN        : A=%0d B=%0d R=%0d\n",
+                    a_class_count[4],
+                    b_class_count[4],
+                    result_class_count[4]
+                );
+
+                $fwrite(
+                    report_fd,
+                    "\nSIGN COVERAGE\n"
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  +,+ = %0d\n",
+                    sign_combo_count[0]
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  +,- = %0d\n",
+                    sign_combo_count[1]
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  -,+ = %0d\n",
+                    sign_combo_count[2]
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  -,- = %0d\n",
+                    sign_combo_count[3]
+                );
+
+                $fwrite(
+                    report_fd,
+                    "\nOPERATION COVERAGE\n"
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  NORMAL*NORMAL        = %0d\n",
+                    normal_normal_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  NORMAL*SUBNORMAL     = %0d\n",
+                    normal_subnormal_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  SUBNORMAL*NORMAL     = %0d\n",
+                    subnormal_normal_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  SUBNORMAL*SUBNORMAL  = %0d\n",
+                    subnormal_subnormal_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  ZERO-related          = %0d\n",
+                    zero_operation_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  INF*ZERO              = %0d\n",
+                    inf_zero_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  NaN-related           = %0d\n",
+                    nan_operation_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "\nEXCEPTION COVERAGE\n"
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  INVALID   = %0d\n",
+                    invalid_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  OVERFLOW  = %0d\n",
+                    overflow_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  UNDERFLOW = %0d\n",
+                    underflow_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  INEXACT   = %0d\n",
+                    inexact_flag_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "  HALF-TIE  = %0d\n",
+                    half_tie_count
+                );
+
+                $fwrite(
+                    report_fd,
+                    "\nFINAL STATUS\n"
+                );
+
+                if ((fail_count == 0) &&
+                    (coverage_failures == 0))
+
+                    $fwrite(
+                        report_fd,
+                        "  ALL TESTS PASSED / COVERAGE COMPLETE\n"
+                    );
+
+                else
+
+                    $fwrite(
+                        report_fd,
+                        "  VERIFICATION FAILED\n"
+                    );
+
+                $fclose(report_fd);
+
+                $display(
+                    "Coverage report written to fp_coverage_report.txt"
+                );
+
+            end
+            else begin
+
+                $display(
+                    "WARNING: Could not create fp_coverage_report.txt"
+                );
+
+            end
+
+        end
+
+    endtask
+
+    // =========================================================================
+    // Main stimulus
+    // =========================================================================
+
+    integer i_test;
+    integer rm_loop;
+
+    reg [63:0] random_A;
+    reg [63:0] random_B;
+
+    initial begin
+
+        // -------------------------------------------------------------
+        // Initial values
+        // -------------------------------------------------------------
+
+        A = 64'd0;
+        B = 64'd0;
+        rounding_mode = 3'b000;
+
+        tb_verbose = 1'b1;
+        tb_mark_half_tie = 1'b0;
+
+        pass_count = 0;
+        fail_count = 0;
+        total_count = 0;
+
+        random_count = 0;
+        directed_count = 0;
+
+        zero_operation_count = 0;
+        inf_zero_count = 0;
+        nan_operation_count = 0;
+
+        normal_normal_count = 0;
+        normal_subnormal_count = 0;
+        subnormal_normal_count = 0;
+        subnormal_subnormal_count = 0;
+
+        result_exact_count = 0;
+        result_inexact_count = 0;
+
+        invalid_count = 0;
+        overflow_count = 0;
+        underflow_count = 0;
+        inexact_flag_count = 0;
+
+        half_tie_count = 0;
+
+        for (i_test = 0; i_test < 5; i_test = i_test + 1) begin
+            rm_count[i_test] = 0;
+            a_class_count[i_test] = 0;
+            b_class_count[i_test] = 0;
+            result_class_count[i_test] = 0;
+        end
+
+        for (i_test = 0; i_test < 4; i_test = i_test + 1)
+            sign_combo_count[i_test] = 0;
+
+        // Deterministic seed.
+        random_seed = 32'h20261004;
+
+        $display("");
+        $display(
+            "============================================================"
+        );
+        $display(
+            " IEEE-754 BINARY64 MULTIPLIER FINAL SELF-CHECK"
+        );
+        $display(
+            " Independent reference model + coverage"
+        );
+        $display(
+            "============================================================"
+        );
+        $display("");
+
+        // =====================================================================
+        // BASIC EXACT TESTS
+        // =====================================================================
+
+        run_case(
+            64'h0000000000000000,
+            64'h0000000000000000,
+            3'b000,
+            "0 * 0"
+        );
+
+        run_case(
+            64'h8000000000000000,
+            64'h3FF0000000000000,
+            3'b000,
+            "-0 * 1"
+        );
+
+        run_case(
+            64'h8000000000000000,
+            64'h8000000000000000,
+            3'b000,
+            "-0 * -0"
+        );
+
+        run_case(
+            64'h0000000000000000,
+            64'h8000000000000000,
+            3'b000,
+            "+0 * -0"
+        );
+
+        run_case(
+            64'h3FF0000000000000,
+            64'h4000000000000000,
+            3'b000,
+            "1 * 2"
+        );
+
+        run_case(
+            64'hBFF0000000000000,
+            64'h4000000000000000,
+            3'b000,
+            "-1 * 2"
+        );
+
+        run_case(
+            64'h3FF8000000000000,
+            64'h3FF8000000000000,
+            3'b000,
+            "1.5 * 1.5"
+        );
+
+        run_case(
+            64'h4016000000000000,
+            64'h401A000000000000,
+            3'b000,
+            "5.5 * 6.5"
+        );
+
+        // =====================================================================
+        // SUBNORMALS / GRADUAL UNDERFLOW
+        // =====================================================================
+
+        run_case(
+            64'h0000000000000001,
+            64'h3FF0000000000000,
+            3'b000,
+            "MIN_SUBNORMAL * 1"
+        );
+
+        run_case(
+            64'h000FFFFFFFFFFFFF,
+            64'h3FF0000000000000,
+            3'b000,
+            "MAX_SUBNORMAL * 1"
+        );
+
+        run_case(
+            64'h0010000000000000,
+            64'h3FE0000000000000,
+            3'b000,
+            "MIN_NORMAL * 0.5"
+        );
+
+        // Exact subnormal arithmetic
+        run_case(
+            64'h0000000000000002,
+            64'h3FF0000000000000,
+            3'b000,
+            "2*MIN_SUBNORMAL * 1"
+        );
+
+        run_case(
+            64'h000FFFFFFFFFFFFF,
+            64'h4000000000000000,
+            3'b000,
+            "MAX_SUBNORMAL * 2"
+        );
+
+        // Deep underflow
+        run_all_rounding_modes(
+            64'h0000000000000001,
+            64'h0000000000000001,
+            "MIN_SUBNORMAL * MIN_SUBNORMAL"
+        );
+
+        // =====================================================================
+        // EXACT HALF-TIE
+        //
+        // (1 + 2^-52) * 1.5 is a true midpoint for the retained binary64
+        // significand under this multiplication.
+        // =====================================================================
+
+        tb_mark_half_tie = 1'b1;
+
+        run_all_rounding_modes(
+            64'h3FF0000000000001,
+            64'h3FF8000000000000,
+            "POSITIVE HALF-TIE"
+        );
+
+        run_all_rounding_modes(
+            64'hBFF0000000000001,
+            64'h3FF8000000000000,
+            "NEGATIVE HALF-TIE"
+        );
+
+        // Tiny half-way case:
+        // 2^-1075 lies exactly halfway between zero and MIN_SUBNORMAL.
+        run_all_rounding_modes(
+            64'h0000000000000001,
+            64'h3FE0000000000000,
+            "MIN_SUBNORMAL * 0.5"
+        );
+
+        tb_mark_half_tie = 1'b0;
+
+        // =====================================================================
+        // INEXACT NORMAL RESULTS
+        // =====================================================================
+
+        run_case(
+            64'h3FF199999999999A,
+            64'h3FF199999999999A,
+            3'b000,
+            "1.1 * 1.1"
+        );
+
+        run_case(
+            64'h3FF3333333333333,
+            64'h3FF3333333333333,
+            3'b000,
+            "1.2 * 1.2"
+        );
+
+
+        // =====================================================================
+        // PRECISION / BOUNDARY REGRESSION TESTS
+        // =====================================================================
+        //
+        // These cases target exact transitions between:
+        //   * largest subnormal and smallest normal
+        //   * exact half-way rounding points
+        //   * smallest representable subnormal values
+        //   * maximum finite value and overflow
+        //   * adjacent rounding outcomes
+        //
+
+        // ---------------------------------------------------------------------
+        // Exact transition:
+        // 2^-1022 * (1 - 2^-52) = MAX_SUBNORMAL
+        // ---------------------------------------------------------------------
+
+        run_case(
+            64'h0010000000000000,
+            64'h3FEFFFFFFFFFFFFE,
+            3'b000,
+            "MIN_NORMAL * (1-2^-52)"
+        );
+
+        // ---------------------------------------------------------------------
+        // Exact halfway between MAX_SUBNORMAL and MIN_NORMAL.
+        //
+        // Positive:
+        //   RNE -> MIN_NORMAL
+        //   RTZ -> MAX_SUBNORMAL
+        //   RUP -> MIN_NORMAL
+        //   RDN -> MAX_SUBNORMAL
+        //   RNA -> MIN_NORMAL
+        // ---------------------------------------------------------------------
+
+        tb_mark_half_tie = 1'b1;
+
+        run_all_rounding_modes(
+            64'h0010000000000000,
+            64'h3FEFFFFFFFFFFFFF,
+            "NORMAL/SUBNORMAL HALF-TIE"
+        );
+
+        // Negative version.
+        run_all_rounding_modes(
+            64'h8010000000000000,
+            64'h3FEFFFFFFFFFFFFF,
+            "NEG NORMAL/SUBNORMAL HALF-TIE"
+        );
+
+        tb_mark_half_tie = 1'b0;
+
+        // ---------------------------------------------------------------------
+        // MAX_SUBNORMAL multiplied by the first representable number above 1.
+        // This exact product lies just below MIN_NORMAL.
+        // ---------------------------------------------------------------------
+
+        run_all_rounding_modes(
+            64'h000FFFFFFFFFFFFF,
+            64'h3FF0000000000001,
+            "MAX_SUBNORMAL * NEXT_ABOVE_1"
+        );
+
+        // ---------------------------------------------------------------------
+        // Smallest subnormal * 1.5 is exactly halfway between:
+        //   1 * MIN_SUBNORMAL
+        //   2 * MIN_SUBNORMAL
+        // ---------------------------------------------------------------------
+
+        tb_mark_half_tie = 1'b1;
+
+        run_all_rounding_modes(
+            64'h0000000000000001,
+            64'h3FF8000000000000,
+            "MIN_SUBNORMAL * 1.5"
+        );
+
+        // Negative version.
+        run_all_rounding_modes(
+            64'h8000000000000001,
+            64'h3FF8000000000000,
+            "NEG MIN_SUBNORMAL * 1.5"
+        );
+
+        tb_mark_half_tie = 1'b0;
+
+        // ---------------------------------------------------------------------
+        // Overflow boundary:
+        //
+        // MAX_FINITE * (1 + 2^-52) -> overflow.
+        // ---------------------------------------------------------------------
+
+        run_all_rounding_modes(
+            64'h7FEFFFFFFFFFFFFF,
+            64'h3FF0000000000001,
+            "MAX_FINITE * NEXT_ABOVE_1"
+        );
+
+        // ---------------------------------------------------------------------
+        // Opposite side of the overflow boundary:
+        //
+        // (MAX_FINITE - 2 ULP) * (1 + 2^-52)
+        // -> MAX_FINITE
+        // ---------------------------------------------------------------------
+
+        run_all_rounding_modes(
+            64'h7FEFFFFFFFFFFFFD,
+            64'h3FF0000000000001,
+            "MAX_MINUS_2ULP * NEXT_ABOVE_1"
+        );
+
+        // Negative versions.
+        run_all_rounding_modes(
+            64'hFFEFFFFFFFFFFFFF,
+            64'h3FF0000000000001,
+            "NEG_MAX_FINITE * NEXT_ABOVE_1"
+        );
+
+        run_all_rounding_modes(
+            64'hFFEFFFFFFFFFFFFD,
+            64'h3FF0000000000001,
+            "NEG_MAX_MINUS_2ULP * NEXT_ABOVE_1"
+        );
+
+        // ---------------------------------------------------------------------
+        // Neighboring normal rounding cases.
+        // ---------------------------------------------------------------------
+
+        run_case(
+            64'h3FF0000000000002,
+            64'h3FF8000000000000,
+            3'b000,
+            "ROUNDING ABOVE HALF-TIE"
+        );
+
+        run_case(
+            64'h3FF0000000000000,
+            64'h3FF8000000000000,
+            3'b000,
+            "EXACT NORMAL"
+        );
+
+        // =====================================================================
+        // OVERFLOW
+        // =====================================================================
+
+        run_all_rounding_modes(
+            64'h7FEFFFFFFFFFFFFF,
+            64'h4000000000000000,
+            "POSITIVE OVERFLOW"
+        );
+
+        run_all_rounding_modes(
+            64'hFFEFFFFFFFFFFFFF,
+            64'h4000000000000000,
+            "NEGATIVE OVERFLOW"
+        );
+
+        // =====================================================================
+        // INFINITY
+        // =====================================================================
+
+        run_case(
+            64'h7FF0000000000000,
+            64'h3FF0000000000000,
+            3'b000,
+            "INF * 1"
+        );
+
+        run_case(
+            64'hFFF0000000000000,
+            64'h3FF0000000000000,
+            3'b000,
+            "-INF * 1"
+        );
+
+        run_case(
+            64'h7FF0000000000000,
+            64'hFFF0000000000000,
+            3'b000,
+            "INF * -INF"
+        );
+
+        run_case(
+            64'h7FF0000000000000,
+            64'h0000000000000000,
+            3'b000,
+            "INF * 0"
+        );
+
+        run_case(
+            64'h7FF0000000000000,
+            64'h8000000000000000,
+            3'b000,
+            "INF * -0"
+        );
+
+        // =====================================================================
+        // NaN
+        // =====================================================================
+
+        run_case(
+            64'h7FF8000000000001,
+            64'h3FF0000000000000,
+            3'b000,
+            "QNaN * 1"
+        );
+
+        run_case(
+            64'h7FF0000000000001,
+            64'h3FF0000000000000,
+            3'b000,
+            "SNaN * 1"
+        );
+
+        run_case(
+            64'h3FF0000000000000,
+            64'h7FF8000000001234,
+            3'b000,
+            "1 * QNaN"
+        );
+
+        run_case(
+            64'h3FF0000000000000,
+            64'h7FF0000000001234,
+            3'b000,
+            "1 * SNaN"
+        );
+
+        run_case(
+            64'h7FF0000000001111,
+            64'h7FF0000000002222,
+            3'b000,
+            "SNaN * SNaN"
+        );
+
+        run_case(
+            64'h7FF8000000001111,
+            64'h7FF0000000002222,
+            3'b000,
+            "QNaN * SNaN"
+        );
+
+        // =====================================================================
+        // RANDOM VERIFICATION
+        //
+        // 2,000 vectors per rounding mode = 10,000 random tests.
+        //
+        // Random generator intentionally includes:
+        //   - zero
+        //   - subnormal
+        //   - low exponents
+        //   - around exponent bias
+        //   - near max exponent
+        //   - both signs
+        // =====================================================================
+
+        tb_verbose = 1'b0;
+
+        $display("");
+        $display(
+            "Starting 10,000 deterministic random finite tests..."
+        );
+        $display("");
+
+        for (rm_loop = 0;
+             rm_loop < 5;
+             rm_loop = rm_loop + 1) begin
+
+            for (i_test = 0;
+                 i_test < 2000;
+                 i_test = i_test + 1) begin
+
+                random_finite_value(random_A);
+                random_finite_value(random_B);
+
+                run_case(
+                    random_A,
+                    random_B,
+                    rm_loop[2:0],
+                    "RANDOM_FINITE"
+                );
+
+                random_count =
+                    random_count + 1;
+
+                if ((random_count % 1000) == 0) begin
+
+                    $display(
+                        "  Random progress: %0d / 10000",
+                        random_count
+                    );
+
+                end
+
+            end
+
+        end
+
+        // =====================================================================
+        // FINAL REPORT
+        // =====================================================================
+
+        write_coverage_report();
+
+        #1;
+
+        if ((fail_count == 0) &&
+            (pass_count == total_count)) begin
+
+            $finish;
+
+        end
+        else begin
+
+            $display("");
+            $display(
+                "Simulation completed with verification failures."
+            );
+            $finish;
+
+        end
+
+    end
+
+endmodule
